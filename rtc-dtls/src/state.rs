@@ -36,6 +36,10 @@ pub struct State {
 
     pub(crate) pre_master_secret: Vec<u8>,
     pub(crate) extended_master_secret: bool,
+    /// The client's hello carried the `renegotiation_info` extension or the
+    /// `TLS_EMPTY_RENEGOTIATION_INFO_SCSV` (RFC 5746): only then does the server's hello carry
+    /// `renegotiation_info`.
+    pub(crate) remote_renegotiation_info: bool,
 
     pub(crate) named_curve: NamedCurve,
     pub(crate) local_keypair: Option<NamedCurveKeypair>,
@@ -91,6 +95,7 @@ impl State {
 
             pre_master_secret: vec![],
             extended_master_secret: false,
+            remote_renegotiation_info: false,
 
             named_curve: NamedCurve::Unsupported,
             local_keypair: None,

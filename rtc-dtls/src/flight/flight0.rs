@@ -91,8 +91,16 @@ impl Flight for Flight0 {
                 ));
             }
 
+            // RFC 5746 section 3.6: secure renegotiation is signalled by the extension or by
+            // the SCSV; the server's hello answers with the extension only then.
+            state.remote_renegotiation_info = client_hello
+                .cipher_suites
+                .contains(&CipherSuiteId::Tls_Empty_Renegotiation_Info_Scsv);
             for extension in &client_hello.extensions {
                 match extension {
+                    Extension::RenegotiationInfo(_) => {
+                        state.remote_renegotiation_info = true;
+                    }
                     Extension::SupportedEllipticCurves(e) => {
                         if e.elliptic_curves.is_empty() {
                             return Err((

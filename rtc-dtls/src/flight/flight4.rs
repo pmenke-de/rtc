@@ -527,9 +527,15 @@ impl Flight for Flight4 {
         _cache: &HandshakeCache,
         cfg: &HandshakeConfig,
     ) -> Result<Vec<Packet>, (Option<Alert>, Option<Error>)> {
-        let mut extensions = vec![Extension::RenegotiationInfo(ExtensionRenegotiationInfo {
-            renegotiated_connection: 0,
-        })];
+        // RFC 5246 section 7.4.1.4 and RFC 5746 section 3.6: only in answer to the client's
+        // `renegotiation_info` or its SCSV; strict clients abort with `unsupported_extension`
+        // on an extension they did not ask for.
+        let mut extensions = vec![];
+        if state.remote_renegotiation_info {
+            extensions.push(Extension::RenegotiationInfo(ExtensionRenegotiationInfo {
+                renegotiated_connection: 0,
+            }));
+        }
         if (cfg.extended_master_secret == ExtendedMasterSecretType::Request
             || cfg.extended_master_secret == ExtendedMasterSecretType::Require)
             && state.extended_master_secret
