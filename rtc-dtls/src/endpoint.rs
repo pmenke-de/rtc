@@ -345,6 +345,7 @@ mod tests {
     use crate::config::ConfigBuilder;
     use crate::conn::DEFAULT_MAXIMUM_RETRANSMIT_NUMBER;
     use crate::crypto::Certificate;
+    use crate::extension::{Extension, ExtensionValue};
     use crypto::{CryptoError, RTCCrypto, RTCCryptoProvider, RTCRandom};
 
     fn client_addr() -> SocketAddr {
@@ -1032,6 +1033,74 @@ mod tests {
                 EndpointEvent::ApplicationData(data) if data.as_ref() == b"and back"
             )),
             "the connection stopped carrying data back after a forged record"
+        );
+        Ok(())
+    }
+
+    /// The extensions of the ServerHello a server sends to a client offering `suite`, read
+    /// from the server's flight 4 as it goes on the wire.
+    fn server_hello_extensions(suite: CipherSuiteId) -> Result<Vec<Extension>> {
+        use crate::content::Content;
+        use crate::handshake::HandshakeMessage;
+        use crate::record_layer::{RecordLayer, unpack_datagram};
+
+        let provider = crypto::default_provider().map_err(|e| Error::Crypto(e.to_string()))?;
+        let client_config = config(provider.clone(), true, &[suite])?;
+        let server_config = config(provider, false, &[suite])?;
+        let mut client = Endpoint::new(client_addr(), TransportProtocol::UDP, None);
+        let mut server = Endpoint::new(server_addr(), TransportProtocol::UDP, Some(server_config));
+        client.connect(Instant::now(), server_addr(), client_config, None)?;
+
+        for _ in 0..4 {
+            transfer(&mut client, &mut server, client_addr())?;
+            while let Some(transmit) = server.poll_transmit() {
+                for record in unpack_datagram(&transmit.message)? {
+                    let record = RecordLayer::unmarshal(&mut record.as_slice())?;
+                    if let Content::Handshake(h) = record.content
+                        && let HandshakeMessage::ServerHello(hello) = h.handshake_message
+                    {
+                        return Ok(hello.extensions);
+                    }
+                }
+                client.read(
+                    Instant::now(),
+                    server_addr(),
+                    transmit.transport.ecn,
+                    transmit.message,
+                )?;
+            }
+        }
+        panic!("no ServerHello from the server");
+    }
+
+    /// RFC 8422 section 5.1 and RFC 7919 section 3: `supported_groups` (type 10) is a client
+    /// extension; a TLS 1.2 server names its curve in the ServerKeyExchange. Strict clients
+    /// (OpenJDK's, Groundwire on iOS) end the handshake with a fatal `unsupported_extension`
+    /// when the ServerHello carries it. `ec_point_formats` stays (RFC 8422 section 5.2).
+    #[test]
+    fn server_hello_carries_no_supported_groups() -> Result<()> {
+        let extensions =
+            server_hello_extensions(CipherSuiteId::Tls_Ecdhe_Ecdsa_With_Aes_128_Gcm_Sha256)?;
+        assert!(
+            !extensions
+                .iter()
+                .any(|e| e.extension_value() == ExtensionValue::SupportedEllipticCurves),
+            "the ServerHello carries supported_groups: {extensions:?}"
+        );
+        assert!(
+            extensions
+                .iter()
+                .any(|e| e.extension_value() == ExtensionValue::SupportedPointFormats),
+            "the ServerHello of an ECDHE suite carries ec_point_formats: {extensions:?}"
+        );
+
+        let extensions = server_hello_extensions(CipherSuiteId::Tls_Psk_With_Aes_128_Gcm_Sha256)?;
+        assert!(
+            !extensions.iter().any(|e| matches!(
+                e.extension_value(),
+                ExtensionValue::SupportedEllipticCurves | ExtensionValue::SupportedPointFormats
+            )),
+            "the ServerHello of a PSK suite carries an EC extension: {extensions:?}"
         );
         Ok(())
     }

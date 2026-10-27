@@ -8,7 +8,6 @@ use crate::content::*;
 use crate::crypto::*;
 use crate::curve::named_curve::*;
 use crate::curve::*;
-use crate::extension::extension_supported_elliptic_curves::*;
 use crate::extension::extension_supported_point_formats::*;
 use crate::extension::extension_use_extended_master_secret::*;
 use crate::extension::extension_use_srtp::*;
@@ -545,15 +544,16 @@ impl Flight for Flight4 {
             }));
         }
 
+        // A TLS 1.2 server names its curve in the ServerKeyExchange; `supported_groups`
+        // (`supported_elliptic_curves`) is a client-only extension (RFC 8422 section 5.1,
+        // RFC 7919 section 3), and strict clients abort with a fatal `unsupported_extension`
+        // when a ServerHello carries it. `ec_point_formats` is allowed (RFC 8422 section 5.2).
         if !state.is_cipher_suite_psk() {
-            extensions.extend_from_slice(&[
-                Extension::SupportedEllipticCurves(ExtensionSupportedEllipticCurves {
-                    elliptic_curves: cfg.local_named_curves.clone(),
-                }),
-                Extension::SupportedPointFormats(ExtensionSupportedPointFormats {
+            extensions.push(Extension::SupportedPointFormats(
+                ExtensionSupportedPointFormats {
                     point_formats: vec![ELLIPTIC_CURVE_POINT_FORMAT_UNCOMPRESSED],
-                }),
-            ]);
+                },
+            ));
         }
 
         let mut pkts = vec![Packet {
