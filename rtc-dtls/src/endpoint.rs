@@ -1104,4 +1104,130 @@ mod tests {
         );
         Ok(())
     }
+
+    /// One datagram with a ClientHello offering `suites` and `extensions`, with `cookie`.
+    fn client_hello_datagram(
+        cookie: Vec<u8>,
+        sequence_number: u16,
+        suites: Vec<CipherSuiteId>,
+        extensions: Vec<Extension>,
+    ) -> Result<BytesMut> {
+        use crate::compression_methods::default_compression_methods;
+        use crate::content::Content;
+        use crate::handshake::handshake_message_client_hello::HandshakeMessageClientHello;
+        use crate::handshake::handshake_random::HandshakeRandom;
+        use crate::handshake::{Handshake, HandshakeMessage};
+        use crate::record_layer::RecordLayer;
+        use crate::record_layer::record_layer_header::PROTOCOL_VERSION1_2;
+
+        let mut h = Handshake::new(HandshakeMessage::ClientHello(HandshakeMessageClientHello {
+            version: PROTOCOL_VERSION1_2,
+            random: HandshakeRandom::default(),
+            cookie,
+            cipher_suites: suites,
+            compression_methods: default_compression_methods(),
+            extensions,
+        }));
+        h.handshake_header.message_sequence = sequence_number;
+        let mut record = RecordLayer::new(PROTOCOL_VERSION1_2, 0, Content::Handshake(h));
+        record.record_layer_header.sequence_number = u64::from(sequence_number);
+        let mut raw = vec![];
+        record.marshal(&mut raw)?;
+        Ok(BytesMut::from(&raw[..]))
+    }
+
+    /// The extensions of the ServerHello a server sends to a hand-built ClientHello offering
+    /// `suites` and `extensions` (sent twice: without, then with the server's cookie).
+    fn server_hello_to(
+        suites: Vec<CipherSuiteId>,
+        extensions: Vec<Extension>,
+    ) -> Result<Vec<Extension>> {
+        use crate::content::Content;
+        use crate::handshake::HandshakeMessage;
+        use crate::record_layer::{RecordLayer, unpack_datagram};
+
+        let provider = crypto::default_provider().map_err(|e| Error::Crypto(e.to_string()))?;
+        let server_config = config(
+            provider,
+            false,
+            &[CipherSuiteId::Tls_Ecdhe_Ecdsa_With_Aes_128_Gcm_Sha256],
+        )?;
+        let mut server = Endpoint::new(server_addr(), TransportProtocol::UDP, Some(server_config));
+        let mut cookie = vec![];
+        for sequence_number in 0..2 {
+            let hello = client_hello_datagram(
+                cookie.clone(),
+                sequence_number,
+                suites.clone(),
+                extensions.clone(),
+            )?;
+            server.read(Instant::now(), client_addr(), None, hello)?;
+            while let Some(transmit) = server.poll_transmit() {
+                for record in unpack_datagram(&transmit.message)? {
+                    let record = RecordLayer::unmarshal(&mut record.as_slice())?;
+                    if let Content::Handshake(h) = record.content {
+                        match h.handshake_message {
+                            HandshakeMessage::HelloVerifyRequest(v) => cookie = v.cookie,
+                            HandshakeMessage::ServerHello(hello) => return Ok(hello.extensions),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        panic!("no ServerHello from the server");
+    }
+
+    /// RFC 5246 section 7.4.1.4 and RFC 5746 section 3.6: the server sends
+    /// `renegotiation_info` only when the client's hello carried the extension or the
+    /// `TLS_EMPTY_RENEGOTIATION_INFO_SCSV`. Groundwire (iOS) offers neither and aborts with a
+    /// fatal `unsupported_extension` on a ServerHello that has it.
+    #[test]
+    fn server_hello_carries_renegotiation_info_only_when_offered() -> Result<()> {
+        use crate::extension::extension_supported_elliptic_curves::ExtensionSupportedEllipticCurves;
+        use crate::extension::renegotiation_info::ExtensionRenegotiationInfo;
+
+        let suite = CipherSuiteId::Tls_Ecdhe_Ecdsa_With_Aes_128_Gcm_Sha256;
+        let curves = Extension::SupportedEllipticCurves(ExtensionSupportedEllipticCurves {
+            elliptic_curves: vec![crate::curve::named_curve::NamedCurve::P256],
+        });
+        let has = |extensions: &[Extension]| {
+            extensions
+                .iter()
+                .any(|e| e.extension_value() == ExtensionValue::RenegotiationInfo)
+        };
+
+        let neither = server_hello_to(vec![suite], vec![curves.clone()])?;
+        assert!(
+            !has(&neither),
+            "renegotiation_info not offered: {neither:?}"
+        );
+
+        let scsv = server_hello_to(
+            vec![suite, CipherSuiteId::Tls_Empty_Renegotiation_Info_Scsv],
+            vec![curves.clone()],
+        )?;
+        assert!(has(&scsv), "the SCSV offers it: {scsv:?}");
+
+        let extension = server_hello_to(
+            vec![suite],
+            vec![
+                curves,
+                Extension::RenegotiationInfo(ExtensionRenegotiationInfo {
+                    renegotiated_connection: 0,
+                }),
+            ],
+        )?;
+        assert!(has(&extension), "the extension offers it: {extension:?}");
+        Ok(())
+    }
+
+    /// The SCSV code point is read as itself, not as an unsupported suite.
+    #[test]
+    fn renegotiation_info_scsv_round_trips() {
+        let id = CipherSuiteId::from(0x00ff);
+        assert_eq!(id, CipherSuiteId::Tls_Empty_Renegotiation_Info_Scsv);
+        assert_eq!(id as u16, 0x00ff);
+        assert_eq!(id.to_string(), "TLS_EMPTY_RENEGOTIATION_INFO_SCSV");
+    }
 }
