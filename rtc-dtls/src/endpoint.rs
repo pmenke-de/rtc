@@ -967,6 +967,53 @@ mod tests {
         Ok(())
     }
 
+    /// A peer's fatal alert after the handshake (encrypted, so only this crate can read it)
+    /// comes out of `read` with its level and description, and is not answered: the peer has
+    /// ended the association already (as in pion/dtls, which returns the alert in its error and
+    /// replies to a close_notify only).
+    #[cfg(feature = "crypto-ring")]
+    #[test]
+    fn a_peer_fatal_alert_is_returned_with_its_description_and_not_answered() -> Result<()> {
+        use crate::alert::{AlertDescription, AlertLevel};
+
+        let (mut client, mut server) = completed_client_and_server()?;
+
+        let conn = client
+            .connections
+            .get_mut(&server_addr())
+            .expect("the client's connection");
+        conn.notify(AlertLevel::Fatal, AlertDescription::InternalError);
+        let alert = conn.outgoing_raw_packet().expect("the alert is sent");
+        assert!(conn.outgoing_raw_packet().is_none());
+        assert_eq!(1, alert[4], "the alert goes in epoch 1, encrypted");
+
+        let Err(err) = server.read(
+            Instant::now(),
+            client_addr(),
+            None,
+            BytesMut::from(&alert[..]),
+        ) else {
+            panic!("a fatal alert ends the read with an error");
+        };
+        assert_eq!(
+            Error::ErrAlertFromPeer {
+                level: 2,
+                description: 80,
+                alert: "Alert LevelFatal: InternalError".into(),
+            },
+            err
+        );
+        assert_eq!(
+            "Alert is Fatal or Close Notify: the peer sent Alert LevelFatal: InternalError",
+            err.to_string()
+        );
+        assert!(
+            server.poll_transmit().is_none(),
+            "the peer's fatal alert was answered"
+        );
+        Ok(())
+    }
+
     /// Once the handshake has completed, a genuine peer sends nothing but handshake records
     /// (repeating its final flight) in epoch 0, so any other plaintext record can only be forged
     /// or stale. None of them may close the connection, fail the read or provoke an alert:

@@ -775,21 +775,37 @@ impl DTLSConn {
         };
 
         match r.content {
-            Content::Alert(mut a) => {
+            Content::Alert(a) => {
                 debug!("{}: <- {}", srv_cli_str(self.is_client), a);
+                self.replay_detector[h.epoch as usize].accept();
                 if a.alert_description == AlertDescription::CloseNotify {
                     // Respond with a close_notify [RFC5246 Section 7.2.1]
-                    a = Alert {
+                    let reply = Alert {
                         alert_level: AlertLevel::Warning,
                         alert_description: AlertDescription::CloseNotify,
                     };
+                    return (
+                        false,
+                        Some(reply),
+                        Some(Error::Other(format!("Error of Alert {a}"))),
+                    );
                 }
-                self.replay_detector[h.epoch as usize].accept();
-                return (
-                    false,
-                    Some(a),
-                    Some(Error::Other(format!("Error of Alert {a}"))),
-                );
+                // Any other alert is not answered (as in pion/dtls): a fatal
+                // one has ended the association on the peer's side already.
+                // A fatal one is returned with what it says, from the
+                // record's own bytes, so that a code this crate has no name
+                // for is kept.
+                let err = if a.alert_level == AlertLevel::Fatal {
+                    let raw = pkt.get(RECORD_LAYER_HEADER_SIZE..RECORD_LAYER_HEADER_SIZE + 2);
+                    Error::ErrAlertFromPeer {
+                        level: raw.map_or(a.alert_level as u8, |r| r[0]),
+                        description: raw.map_or(a.alert_description as u8, |r| r[1]),
+                        alert: a.to_string(),
+                    }
+                } else {
+                    Error::Other(format!("Error of Alert {a}"))
+                };
+                return (false, None, Some(err));
             }
             Content::ChangeCipherSpec(_) => {
                 let invalid_cipher_suite = {

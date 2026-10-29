@@ -1178,6 +1178,19 @@ pub enum Error {
     /// Alert is Fatal or Close Notify.
     #[error("Alert is Fatal or Close Notify")]
     ErrAlertFatalOrClose,
+    /// The peer sent a fatal alert (RFC 5246 section 7.2), which ends the
+    /// association: its level and description code as they came over the
+    /// wire, and the alert as rtc-dtls names it. A peer's close_notify,
+    /// and a fatal alert this end sends, stay `ErrAlertFatalOrClose`.
+    #[error("Alert is Fatal or Close Notify: the peer sent {alert}")]
+    ErrAlertFromPeer {
+        /// The alert level: 2 (fatal).
+        level: u8,
+        /// The alert description, e.g. 80 for internal_error.
+        description: u8,
+        /// The alert as rtc-dtls displays it.
+        alert: String,
+    },
     /// Fragment buffer overflow. New size is greater than specified max.
     #[error(
         "Fragment buffer overflow. New size {new_size} is greater than specified max {max_size}"

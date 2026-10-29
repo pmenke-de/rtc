@@ -2690,7 +2690,14 @@ fn test_old_epoch_alert_honoured_until_handshake_completes() {
     conn.state.remote_epoch = 1; // ChangeCipherSpec has been processed
     assert!(!conn.is_handshake_completed());
     assert!(
-        matches!(conn.read(&fatal_alert), Err(Error::ErrAlertFatalOrClose)),
+        matches!(
+            conn.read(&fatal_alert),
+            Err(Error::ErrAlertFromPeer {
+                level: 2,
+                description: 0x28,
+                ..
+            })
+        ),
         "an old-epoch alert must be accepted until the handshake completes"
     );
 
